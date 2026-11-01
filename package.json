@@ -1,0 +1,20 @@
+{
+  "name": "netlegacy-digital-life-map",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NetLegacy Digital Life Map, a Tech Ease program. Builds to one self-contained index.html.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@fontsource/atkinson-hyperlegible": "^5.0.0",
+    "esbuild": "^0.21.0",
+    "tailwindcss": "^3.4.0"
+  }
+}
