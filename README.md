@@ -55,7 +55,9 @@ In a narrow box the app switches to its phone layout on its own.
 
 ## 4. Privacy, and how it's enforced
 
-- The app stores nothing and has no server. Everything happens in the visitor's browser.
+- The app has no server. Everything happens in the visitor's browser.
+- While someone works, the app keeps a copy of their answers **in that browser tab only**, so an accidental reload, a pull-down-to-refresh, or a crash doesn't lose their work. It is never sent anywhere, and the browser discards it when the tab is closed. **Start fresh** and **Erase everything** clear it at once. On a shared computer (a library, a senior center), remind people to close the tab when they're done.
+- If anything ever goes wrong on a page, the app shows a "Something went wrong" screen instead of a blank one. It offers to reload, or to save the person's answers to an encrypted file first.
 - It never asks for an account password. The Password List is filled in by hand on paper.
 - The only thing it ever creates is the `.netlegacy` file the person chooses to download. That file is encrypted with a phrase they make up. The phrase isn't stored anywhere, so a lost phrase means a lost file.
 - `index.html` carries a strict Content-Security-Policy that forbids any request to any server. I tested this: the finished page makes zero network requests, and a deliberate attempt to contact an outside server is blocked by the browser itself.

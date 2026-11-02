@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { Component, useState, useMemo, useEffect, useRef } from "react";
 
 const NAVY = "#1E2A5A";
 const GREEN = "#7CB894";
@@ -37,6 +37,13 @@ const GROUP_CATS = {
   start: ["D", "E", "P"], money: ["B", "C", "W", "U", "S", "T", "M"], online: ["N", "G", "K"],
   health: ["H", "A"], safe: ["V", "L", "LEG"],
 };
+// Answers are kept in this browser tab only (never sent anywhere) so a reload or crash doesn't lose them.
+const SESSION_KEY = "netlegacy.tab.v1";
+let LAST_SNAPSHOT = null; // in-memory copy, used by the crash screen if tab storage isn't available
+const readSession = () => { try { const t = window.sessionStorage.getItem(SESSION_KEY); return t ? JSON.parse(t) : null; } catch (e) { return null; } };
+const writeSession = (obj) => { try { window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(obj)); } catch (e) { /* tab storage not available: fine */ } };
+const clearSession = () => { try { window.sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* nothing to clear */ } };
+
 const NAME_OPTIONS = {
   D: { q: "Which device are you adding?", opts: ["iPhone", "Android phone", "Computer or laptop", "iPad or tablet"], otherQ: "What device?", ph: "Kindle" },
   P: { q: "Who provides this phone service?", opts: ["Verizon", "AT&T", "T-Mobile", "US Cellular", "Consumer Cellular"], otherQ: "Who is your phone company?", ph: "Straight Talk" },
@@ -60,6 +67,8 @@ const FIELD_LABEL = {
 const NL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap');
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+html, body { overscroll-behavior-y: contain; }
+.nl-mapscroll { overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; border: 3px solid #7CB894; border-radius: 16px; background: #fff; max-height: 74vh; }
 .nl-app { min-height: 100vh; }
 .nl-body { display: flex; min-height: 100vh; }
 .nl-rail { flex: none; width: 320px; box-sizing: border-box; position: sticky; top: 0; align-self: flex-start; height: 100vh; height: 100dvh; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 28px 20px; background: #1E2A5A; color: #fff; }
@@ -197,6 +206,7 @@ const IconSave = (p) => <Icon {...p}><path d="M12 4v10M7.5 10 12 14.5 16.5 10M5 
 const IconMenu = (p) => <Icon {...p}><path d="M4 7h16M4 12h16M4 17h16" /></Icon>;
 const IconBack = (p) => <Icon {...p}><path d="M19 12H5M11 6l-6 6 6 6" /></Icon>;
 const IconClose = (p) => <Icon {...p}><path d="M6 6l12 12M18 6 6 18" /></Icon>;
+const IconMinus = (p) => <Icon {...p}><path d="M5 12h14" /></Icon>;
 
 function LogoMark({ size = 42 }) {
   return (
@@ -575,9 +585,64 @@ function readFileAsText(file) {
 }
 
 // =====================================================================
+// If anything ever goes wrong on a page, show this instead of a blank screen
+// =====================================================================
+function CrashScreen() {
+  const snapshot = LAST_SNAPSHOT || (readSession() || {}).state || null;
+  const [stage, setStage] = useState("choose");
+  const [p1, setP1] = useState("");
+  const [p2, setP2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [show, setShow] = useState(false);
+  async function rescue() {
+    setBusy(true);
+    try {
+      const payload = await encryptState(snapshot, p1);
+      downloadFile(payload, `netlegacy-rescued-${new Date().toISOString().slice(0, 10)}.netlegacy`);
+      setDone(true);
+    } catch (e) {
+      alert("This browser couldn't create the file. Try reloading the page instead.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div style={{ minHeight: "100vh", background: GROUND, color: NAVY, padding: 16, fontFamily: "'Atkinson Hyperlegible', system-ui, sans-serif" }}>
+      <div style={{ maxWidth: 640, margin: "0 auto", background: "#fff", borderRadius: 24, padding: 28 }}>
+        {stage === "choose" ? (
+          <Ask q="Something went wrong on this page."
+            hint={snapshot ? "Your answers are still safe in this browser tab. Choose what you'd like to do." : "We're sorry. Reloading the page usually fixes it."}>
+            <div className="grid gap-3">
+              <Btn kind="go" onClick={() => window.location.reload()}>{snapshot ? "Reload and pick up where I left off" : "Reload the page"}</Btn>
+              {snapshot && <Btn kind="ghost" onClick={() => setStage("save")}>Save my answers to a file first</Btn>}
+              <Btn kind="ghost" onClick={() => { clearSession(); LAST_SNAPSHOT = null; window.location.reload(); }}>Start over (erases everything)</Btn>
+            </div>
+          </Ask>
+        ) : (
+          <SaveOverlay savePass={p1} setSavePass={setP1} savePass2={p2} setSavePass2={setP2} saveBusy={busy} saveDone={done}
+            showPass={show} setShowPass={setShow} onSave={rescue} onCancel={() => setStage("choose")} onDone={() => setStage("choose")} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+class NlBoundary extends Component {
+  constructor(props) { super(props); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err) { if (typeof console !== "undefined") console.error(err); }
+  render() { return this.state.failed ? <CrashScreen /> : this.props.children; }
+}
+
+export default function LifeMapBuilder() {
+  return <NlBoundary><LifeMapApp /></NlBoundary>;
+}
+
+// =====================================================================
 // Main app
 // =====================================================================
-export default function LifeMapBuilder() {
+function LifeMapApp() {
   const [phase, setPhase] = useState("welcome");
   const [trusted, setTrusted] = useState("");
 
@@ -617,6 +682,12 @@ export default function LifeMapBuilder() {
   const [paperTodo, setPaperTodo] = useState([]);   // things to do by hand on the printed pages
   const [dirty, setDirty] = useState(false);        // changes not yet saved to a file
   const [hubView, setHubView] = useState({ screen: "home" });
+  const [restoreOffer, setRestoreOffer] = useState(null); // answers kept in this tab from a moment ago
+  const [mapZoom, setMapZoom] = useState(1);
+  useEffect(() => {
+    const kept = readSession();
+    if (kept && kept.v === 1 && kept.state && kept.state.phase && kept.state.phase !== "welcome") setRestoreOffer(kept);
+  }, []);
   useEffect(() => {
     if (!dirty) return undefined;
     const warn = (e) => { e.preventDefault(); e.returnValue = ""; };
@@ -683,6 +754,7 @@ export default function LifeMapBuilder() {
     setPayments([]); setBills([]); setSocials([]); setPhotos([]); setPurchases([]); setMedical([]);
     setGovernment([]); setVaults([]); setSafes([]);
     setFirstRunDone(false); setRetired([]); setPaperTodo([]); setDirty(false); setHubView({ screen: "home" });
+    clearSession(); LAST_SNAPSHOT = null; setRestoreOffer(null);
     setLegacy([]); setPwLocation(null); setPacketBackup(null); setSub(0); setDraft(null); setQueue([]);
     setBillIdx(0); setBillStage("pay"); setErased(true); setHistory([]); setPhase("welcome");
   }
@@ -698,6 +770,15 @@ export default function LifeMapBuilder() {
     legacy, pwLocation, packetBackup, firstRunDone, retired, paperTodo,
   };
   const sig = `${phase}|${sub}|${billIdx}|${billStage}|${draft ? draft.name || "d" : "-"}|${all.length}`;
+
+  // Keep a copy of the answers in this tab (not sent anywhere), so a reload or crash doesn't lose them
+  useEffect(() => {
+    if (phase === "welcome") return undefined;
+    const state = { ...snap, history: history.slice(-40), dirty };
+    LAST_SNAPSHOT = state;
+    const t = setTimeout(() => writeSession({ v: 1, at: Date.now(), state }), 250);
+    return () => clearTimeout(t);
+  });
   const prev = useRef(null);
   const restoring = useRef(false);
   useEffect(() => {
@@ -801,53 +882,194 @@ export default function LifeMapBuilder() {
   ];
 
   // ---------------- map ----------------
-  const ANGLES = { D: -70, G: -30, K: -10, T: 8, S: 40, U: 70, M: 100, H: 115, A: 122, N: 130, C: 160, W: 175, B: 190, P: -110, V: -145, L: 215 };
+  const mapSize = (n) => ({ W: 640 + Math.max(0, n - 16) * 18, H: 520 + Math.max(0, n - 16) * 14 });
   function MapView({ compact, dark }) {
-    const W = compact ? 300 : 420, H = compact ? 264 : 400;
-    const cx = W / 2, cy = H / 2, r = compact ? 100 : 140;
-    const nodeR = compact ? (all.length > 12 ? 13 : 15) : 17, hubR = compact ? 21 : 24;
+    const W = compact ? 300 : mapSize(all.length).W, H = compact ? 264 : mapSize(all.length).H;
+    const nodeR = compact ? (all.length > 12 ? 13 : 15) : 21, hubR = compact ? 21 : 30;
+    const fs = compact ? 12 : 17, codeFs = compact ? 13 : 15;
     const showLabels = !compact || all.length <= 6;
     const ink = dark ? "#FFFFFF" : NAVY;
     const sub = dark ? "#C9D2EA" : INK2;
+    const halo = dark ? "#2A3870" : "#FFFFFF";
     const lift = (c) => (dark ? (c === NAVY ? "#C9D2EA" : c === GREEN_DK ? GREEN : c) : c);
+    const col = { D: NAVY, E: GREEN_DK, P: NAVY, B: NAVY, C: GOLD, W: GOLD, U: GOLD, S: GOLD, T: GOLD, N: GREEN_DK, G: NAVY, K: NAVY, M: NAVY, H: NAVY, A: NAVY, V: GOLD, L: NAVY };
+    const cx = W / 2, cy = H / 2;
+    const mx = compact ? 22 : 70, my = compact ? 22 : 44;
+    const radOf = (id) => (email1 && id === email1.code ? hubR : nodeR);
+
+    // 1. starting places: your email in the middle, everything else spread around it in order of kind
     const pos = {};
-    const gap = compact ? 44 : 62;
-    emails.forEach((e, i) => (pos[e.code] = { x: cx + i * gap - (emails.length - 1) * (gap / 2), y: cy }));
-    CAT_ORDER.filter((c) => c !== "E").forEach((c) => {
-      byCat(c).forEach((ent, i) => {
-        const a = ((ANGLES[c] + i * (compact ? 17 : 13)) * Math.PI) / 180;
-        pos[ent.code] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+    const hubGap = compact ? 46 : 80;
+    emails.forEach((e, i) => { pos[e.code] = { x: cx + i * hubGap - ((emails.length - 1) * hubGap) / 2, y: cy }; });
+    const cats = CAT_ORDER.filter((c) => c !== "E" && byCat(c).length);
+    const sector = 360 / Math.max(cats.length, 1);
+    const rx = W / 2 - mx, ry = H / 2 - my;
+    cats.forEach((c, ci) => {
+      const list = byCat(c);
+      list.forEach((ent, j) => {
+        const ang = ((-90 + ci * sector + (sector * (j + 0.5)) / list.length) * Math.PI) / 180;
+        const f = list.length > 2 && j % 2 ? 0.74 : 1;
+        pos[ent.code] = { x: cx + rx * f * Math.cos(ang), y: cy + ry * f * Math.sin(ang) };
       });
     });
-    const col = { D: NAVY, E: GREEN_DK, P: NAVY, B: NAVY, C: GOLD, W: GOLD, U: GOLD, S: GOLD, T: GOLD, N: GREEN_DK, G: NAVY, K: NAVY, M: NAVY, H: NAVY, A: NAVY, V: GOLD, L: NAVY };
+
+    // 2. nudge apart anything that would touch, so no dot sits on another
+    const ids = Object.keys(pos);
+    const fixedSet = new Set(emails.map((e) => e.code));
+    for (let it = 0; it < 120; it++) {
+      for (let a = 0; a < ids.length; a++) {
+        for (let b = a + 1; b < ids.length; b++) {
+          const A = pos[ids[a]], B = pos[ids[b]];
+          let dx = B.x - A.x, dy = B.y - A.y;
+          let d = Math.hypot(dx, dy);
+          if (d < 0.01) { dx = 0.5 + (b % 3); dy = 0.5 + (a % 3); d = Math.hypot(dx, dy); }
+          const need = radOf(ids[a]) + radOf(ids[b]) + (showLabels ? (all.length > 20 ? 34 : 22) : 6);
+          if (d >= need) continue;
+          const fa = fixedSet.has(ids[a]), fb = fixedSet.has(ids[b]);
+          if (fa && fb) continue;
+          const push = need - d, ux = dx / d, uy = dy / d;
+          if (fa) { B.x += ux * push; B.y += uy * push; }
+          else if (fb) { A.x -= ux * push; A.y -= uy * push; }
+          else { A.x -= (ux * push) / 2; A.y -= (uy * push) / 2; B.x += (ux * push) / 2; B.y += (uy * push) / 2; }
+        }
+      }
+      ids.forEach((id) => {
+        if (fixedSet.has(id)) return;
+        pos[id].x = Math.min(W - mx, Math.max(mx, pos[id].x));
+        pos[id].y = Math.min(H - my, Math.max(my, pos[id].y));
+      });
+    }
+
+    // 3. put each name where it doesn't cover a dot or another name
+    const dots = ids.map((id) => ({ id, x: pos[id].x - radOf(id), y: pos[id].y - radOf(id), w: radOf(id) * 2, h: radOf(id) * 2 }));
+    const touches = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    const used = [];
+    const labelOf = {};
+    if (showLabels) {
+      all.forEach((n) => {
+        const p = pos[n.code];
+        if (!p) return;
+        const rad = radOf(n.code);
+        const raw = String(n.name || n.code);
+        const text = raw.length > 18 ? raw.slice(0, 17) + "…" : raw;
+        const w = text.length * fs * 0.58 + 6, h = fs + 4;
+        const options = [
+          { x: p.x - w / 2, y: p.y + rad + 3, tx: p.x, ty: p.y + rad + fs + 1, anchor: "middle" },
+          { x: p.x - w / 2, y: p.y - rad - 3 - h, tx: p.x, ty: p.y - rad - 6, anchor: "middle" },
+          { x: p.x + rad + 4, y: p.y - h / 2, tx: p.x + rad + 6, ty: p.y + fs / 3, anchor: "start" },
+          { x: p.x - rad - 4 - w, y: p.y - h / 2, tx: p.x - rad - 6, ty: p.y + fs / 3, anchor: "end" },
+          { x: p.x + rad * 0.6, y: p.y + rad * 0.6 + 2, tx: p.x + rad * 0.6 + 2, ty: p.y + rad * 0.6 + fs + 1, anchor: "start" },
+          { x: p.x - rad * 0.6 - w, y: p.y + rad * 0.6 + 2, tx: p.x - rad * 0.6 - 2, ty: p.y + rad * 0.6 + fs + 1, anchor: "end" },
+          { x: p.x + rad * 0.6, y: p.y - rad * 0.6 - 2 - h, tx: p.x + rad * 0.6 + 2, ty: p.y - rad * 0.6 - 4, anchor: "start" },
+          { x: p.x - rad * 0.6 - w, y: p.y - rad * 0.6 - 2 - h, tx: p.x - rad * 0.6 - 2, ty: p.y - rad * 0.6 - 4, anchor: "end" },
+        ];
+        let best = null, bestScore = Infinity;
+        options.forEach((o) => {
+          const r = { x: o.x, y: o.y, w, h };
+          let score = 0;
+          if (r.x < 2 || r.x + r.w > W - 2 || r.y < 2 || r.y + r.h > H - 2) score += 50;
+          dots.forEach((d) => { if (d.id !== n.code && touches(r, d)) score += 10; });
+          used.forEach((u) => { if (touches(r, u)) score += 10; });
+          if (score < bestScore) { bestScore = score; best = { ...o, text, r }; }
+        });
+        used.push(best.r);
+        labelOf[n.code] = best;
+      });
+    }
+
     return (
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Map of your accounts and how they connect">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Map of your accounts and how they connect. A list of the same connections follows.">
         {edges.map((e, i) => {
           const a = pos[e.from], b = pos[e.to];
           if (!a || !b) return null;
           return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-            stroke={e.type === "pay" ? GOLD : dark ? GREEN : GREEN_DK} strokeWidth={compact ? 2.4 : 2.6}
-            strokeDasharray={e.type === "pay" ? "7 6" : "0"} strokeLinecap="round" />;
+            stroke={e.type === "pay" ? GOLD : dark ? GREEN : GREEN_DK} strokeWidth={compact ? 2.4 : 3}
+            strokeDasharray={e.type === "pay" ? "8 6" : "0"} strokeLinecap="round" />;
         })}
         {all.map((n) => {
           const p = pos[n.code];
           if (!p) return null;
           const hub = email1 && n.code === email1.code;
-          const rad = hub ? hubR : nodeR;
           return (
             <g key={n.code}>
-              <circle cx={p.x} cy={p.y} r={rad} fill={dark ? "#1E2A5A" : "#fff"} stroke={lift(col[n.cat] || NAVY)} strokeWidth={hub ? 5 : 3.2} />
-              <text x={p.x} y={p.y + (compact ? 5 : 5)} textAnchor="middle" fontSize={compact ? 13.5 : 12.5} fontWeight="800" fill={ink}>{n.code}</text>
-              {showLabels && (
-                <text x={p.x} y={p.y + (p.y < cy ? -(rad + 7) : rad + 14)} textAnchor="middle" fontSize={compact ? 12 : 10.5} fontWeight="700" fill={sub}>
-                  {n.name.length > 13 ? n.name.slice(0, 12) + "…" : n.name}
-                </text>
-              )}
+              <circle cx={p.x} cy={p.y} r={radOf(n.code)} fill={dark ? "#1E2A5A" : "#fff"} stroke={lift(col[n.cat] || NAVY)} strokeWidth={hub ? 5 : 3.5} />
+              <text x={p.x} y={p.y + codeFs / 3} textAnchor="middle" fontSize={hub ? codeFs + 3 : codeFs} fontWeight="800" fill={ink}>{n.code}</text>
             </g>
           );
         })}
-        {all.length === 0 && <text x={cx} y={cy} textAnchor="middle" fontSize={compact ? 14 : 16} fill={dark ? "#AEB9DA" : "#8a90a8"}>Your map will appear here</text>}
+        {all.map((n) => {
+          const l = labelOf[n.code];
+          if (!l) return null;
+          return <text key={"l" + n.code} x={l.tx} y={l.ty} textAnchor={l.anchor} fontSize={fs} fontWeight="700" fill={sub}
+            stroke={halo} strokeWidth="4" strokeLinejoin="round" paintOrder="stroke">{l.text}</text>;
+        })}
+        {all.length === 0 && <text x={cx} y={cy} textAnchor="middle" fontSize={compact ? 14 : 18} fill={dark ? "#AEB9DA" : "#8a90a8"}>Your map will appear here</text>}
       </svg>
+    );
+  }
+
+  // The same connections in plain words, for small screens and for anyone who finds a picture hard to read
+  function mapList() {
+    const rows = [];
+    CAT_ORDER.forEach((c) => byCat(c).forEach((x) => {
+      const parts = [];
+      if (x.method === "passkey") parts.push(`Opens with ${device1 ? device1.name : "your device"}, no password`);
+      else if (x.signin === "username") parts.push("Signs in with a username");
+      else if (x.signin) parts.push(`Signs in with ${nameOf(x.signin)}`);
+      if (x.payCode) parts.push(`Paid by ${nameOf(x.payCode)}`);
+      else if (x.payNote) parts.push(`Paid by ${x.payNote}`);
+      if (x.bankCode) parts.push(`Linked to ${nameOf(x.bankCode)}`);
+      if (x.cat === "P" && device1) parts.push(`Phone service for ${device1.name}`);
+      if (parts.length) rows.push({ x, parts });
+    }));
+    if (!rows.length) return <p className="text-lg" style={{ color: INK2 }}>Nothing is connected yet.</p>;
+    const cats = [...new Set(rows.map((r) => r.x.cat))];
+    return (
+      <div>
+        {cats.map((c) => (
+          <div key={c} className="mb-4">
+            <h4 className="mb-2 text-xl font-bold" style={{ color: NAVY }}>{CAT_TITLES[c]}</h4>
+            {rows.filter((r) => r.x.cat === c).map((r) => (
+              <div key={r.x.code} className="mb-2 rounded-xl p-3" style={{ border: `2px solid ${RULE}`, background: "#fff" }}>
+                <p className="text-lg font-bold" style={{ color: NAVY }}>
+                  <span className="mr-2 inline-block rounded-lg px-2 py-0.5 text-base font-bold" style={{ background: PANEL, color: GREEN_DK, border: `2px solid ${GREEN}` }}>{r.x.code}</span>{r.x.name}
+                </p>
+                {r.parts.map((t, i) => <p key={i} className="text-lg" style={{ color: INK2 }}>{t}</p>)}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  function mapBlock() {
+    const small = typeof window !== "undefined" && window.innerWidth < 900;
+    const ZOOMS = small ? [0.5, 1, 1.5, 2, 3] : [1, 1.5, 2, 3];   // on a phone, the smallest step fits the whole map on screen
+    const zi = ZOOMS.indexOf(mapZoom) < 0 ? ZOOMS.indexOf(1) : ZOOMS.indexOf(mapZoom);
+    const zbtn = { minHeight: 48, fontSize: 18, background: "#fff", color: NAVY, border: `2px solid ${NAVY}` };
+    return (
+      <div>
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <button onClick={() => setMapZoom(ZOOMS[Math.max(0, zi - 1)])} disabled={zi === 0} aria-label="Make the map smaller"
+            className="flex items-center gap-2 rounded-xl px-4 font-bold focus:outline-none focus-visible:ring-4 disabled:opacity-40" style={zbtn}><IconMinus size={20} sw={2.6} /> Smaller</button>
+          <button onClick={() => setMapZoom(ZOOMS[Math.min(ZOOMS.length - 1, zi + 1)])} disabled={zi === ZOOMS.length - 1} aria-label="Make the map bigger"
+            className="flex items-center gap-2 rounded-xl px-4 font-bold focus:outline-none focus-visible:ring-4 disabled:opacity-40" style={zbtn}><IconPlus size={20} sw={2.6} /> Bigger</button>
+          <span className="text-base" style={{ color: INK2 }}>{small ? "Smaller shows the whole map. Bigger makes the names easy to read. Drag to look around." : "Drag the map to look around."}</span>
+        </div>
+        <div className="nl-mapscroll mb-3"
+          ref={(el) => { if (el && !el.dataset.centered) { el.scrollLeft = (el.scrollWidth - el.clientWidth) / 2; el.dataset.centered = "1"; } }}>
+          <div style={{ width: `${ZOOMS[zi] * 100}%`, minWidth: mapSize(all.length).W * ZOOMS[zi] }}><MapView /></div>
+        </div>
+        <div className="mb-4 flex flex-wrap gap-4 text-lg font-bold" style={{ color: INK2 }}>
+          <span><span style={{ color: GREEN_DK }}>——</span> signs in with</span>
+          <span><span style={{ color: GOLD }}>- - -</span> pays for</span>
+        </div>
+        <details className="mb-5" open={small}>
+          <summary className="cursor-pointer text-xl font-bold" style={{ color: NAVY, minHeight: 44 }}>Show it as a list</summary>
+          <div className="mt-3">{mapList()}</div>
+        </details>
+      </div>
     );
   }
 
@@ -1172,7 +1394,8 @@ export default function LifeMapBuilder() {
       case "last4": return <TypeIn key={key} q="Last 4 digits on the card?" hint="Enough to tell cards apart — useless on its own." placeholder="4821" skipLabel="Skip this" numeric maxLength={4}
         initial={e.last4 || ""} onSave={(v) => onResult({ last4: v || undefined })} />;
       case "last4s": return <Last4Loop key={key} types={e.types || []} initial={e.last4ByType} onDone={(patch) => onResult(patch)} />;
-      case "types": return <PickMany key={key} q={`What do you have at ${e.name}?`} hint="Tap all that apply." options={["Checking", "Savings", "Investment or retirement"]}
+      case "types": return <PickMany key={key} q={`What do you have at ${e.name}?`} hint="Tap all that apply." options={["Checking", "Savings", "Investment, retirement, or money market"]}
+        otherLabel="+ Other" otherQ="What kind of account is it?" otherPlaceholder="Certificate of deposit (CD)"
         initial={e.types || []} nextLabel="Save" emptyLabel="None of these — save"
         onNext={(sel) => onResult({ types: sel, last4ByType: Object.fromEntries(Object.entries(e.last4ByType || {}).filter(([t]) => sel.includes(t))) })} />;
       case "moneyIn": return <PickMany key={key} q={`What money arrives in ${e.name} on its own?`} hint="The deposits that show up without you doing anything."
@@ -1411,11 +1634,7 @@ export default function LifeMapBuilder() {
       <div>
         {backBtn("Back to My Map", () => hubGo({ screen: "home" }))}
         <Ask q="Your map">
-          <div className="mb-4 rounded-2xl p-3" style={{ background: "#fff", border: `2px solid ${RULE}` }}><MapView /></div>
-          <div className="mb-4 flex flex-wrap gap-4 text-lg font-bold" style={{ color: INK2 }}>
-            <span><span style={{ color: GREEN_DK }}>——</span> signs in with</span>
-            <span><span style={{ color: GOLD }}>- - -</span> pays for</span>
-          </div>
+          {mapBlock()}
         </Ask>
       </div>
     );
@@ -1448,8 +1667,19 @@ export default function LifeMapBuilder() {
             We will never ask for one of your account passwords. Not one. Ever.
           </div>
           {erased && <p className="mb-4 text-lg font-bold" style={{ color: GOLD }}>✓ Everything from last time was erased.</p>}
+          {restoreOffer && (
+            <div className="mb-6 rounded-2xl p-5" style={{ background: "#fff", border: `3px solid ${NAVY}` }}>
+              <p className="mb-2 text-2xl font-bold" style={{ color: NAVY }}>Welcome back.</p>
+              <p className="mb-4 text-lg" style={{ color: INK2 }}>We kept your answers in this browser tab while you were away. Pick up right where you left off?</p>
+              <div className="grid gap-3">
+                <Btn kind="go" onClick={() => { applyFullState(restoreOffer.state); setDirty(true); setRestoreOffer(null); }}>Pick up where I left off</Btn>
+                <Btn kind="ghost" onClick={() => { clearSession(); setRestoreOffer(null); }}>Start fresh</Btn>
+              </div>
+              <p className="mt-3 text-base" style={{ color: INK2 }}>Only kept in this tab, only until you close it. It is never sent anywhere.</p>
+            </div>
+          )}
           <div className="grid gap-3">
-            <Btn kind="go" onClick={() => next("trusted")}>Start my map</Btn>
+            <Btn kind="go" onClick={() => { clearSession(); setRestoreOffer(null); next("trusted"); }}>Start my map</Btn>
             <Btn kind="ghost" onClick={() => fileInputRef.current && fileInputRef.current.click()}>Continue a saved map</Btn>
           </div>
           <input ref={fileInputRef} type="file" accept=".netlegacy,application/json,.json" onChange={onPickFile} className="hidden" />
@@ -1481,16 +1711,21 @@ export default function LifeMapBuilder() {
     // ---------- emails ----------
     if (phase === "emails") {
       if (sub === 0) {
-        return <TypeIn key={"em" + emails.length}
-          q={emails.length ? "What's your other email address?" : "What email address do you check?"}
-          hint={emails.length ? null : "Email is the front door to almost everything. Just the address — never the password."}
-          placeholder="yourname@gmail.com"
-          skipLabel={emails.length ? "That's all my email" : null}
-          initial={draft?.name || ""}
-          onSave={(v) => { if (v === null) { next("carrier"); return; } setDraft({ name: v }); setSub(1); }} />;
+        return (
+          <div>
+            {emails.length > 0 && <Notice>{emails[emails.length - 1].name} is saved.</Notice>}
+            <TypeIn key={"em" + emails.length}
+              q={emails.length ? "Do you have another email address?" : "What email address do you check?"}
+              hint={emails.length ? "Type it below, or tap the button if that's all." : "Email is the front door to almost everything. Just the address — never the password."}
+              placeholder="yourname@gmail.com"
+              skipLabel={emails.length ? "No, that's all my email" : null}
+              initial={draft?.name || ""}
+              onSave={(v) => { if (v === null) { next("carrier"); return; } setDraft({ name: v }); setSub(1); }} />
+          </div>
+        );
       }
       if (sub === 1) {
-        return <PickOne key="emmethod" q={`When you open ${draft.name}, does it ask for a password?`}
+        return <div>{emails.length > 0 && <Notice>{emails[emails.length - 1].name} is saved. Now a few questions about {draft.name}.</Notice>}<PickOne key="emmethod" q={`When you open ${draft.name}, does it ask for a password?`}
           hint="Some accounts let you straight in without typing anything — that's a passkey, living on your device."
           options={[
             { label: "Yes, I type a password", value: "password" },
@@ -1498,7 +1733,7 @@ export default function LifeMapBuilder() {
             { label: "Sometimes one, sometimes the other", value: "both" },
             { label: "I'm not sure", value: "password" },
           ]}
-          onPick={(m) => { setDraft({ ...draft, method: m, deviceCode: m !== "password" ? "D1" : null }); setSub(2); }} />;
+          onPick={(m) => { setDraft({ ...draft, method: m, deviceCode: m !== "password" ? "D1" : null }); setSub(2); }} /></div>;
       }
       if (sub === 2) {
         return <PickOne key="emrec" q="If you got locked out, where would the reset code go?"
@@ -1568,17 +1803,18 @@ export default function LifeMapBuilder() {
     // ---------- banks ----------
     if (phase === "banks") {
       if (sub === 0) {
-        return <TypeIn key={"bk" + banks.length}
+        return <div>{banks.length > 0 && <Notice>{banks[banks.length - 1].name} is saved.</Notice>}<TypeIn key={"bk" + banks.length}
           q={banks.length ? "Any other bank, credit union, or investment account?" : "Where do you keep your money?"}
           hint={banks.length ? null : "Include retirement or investment accounts too, even at a different company than your regular bank — a 401(k) or a Vanguard or Fidelity account counts. Just the name; passwords and full account numbers stay off this map."}
           placeholder="First Bank of Tennessee"
           skipLabel={banks.length ? "That's all of them" : "Skip banking"}
           initial={draft?.name || ""}
-          onSave={(v) => { if (v === null) { next("cards"); return; } setDraft({ name: v }); setSub(1); }} />;
+          onSave={(v) => { if (v === null) { next("cards"); return; } setDraft({ name: v }); setSub(1); }} /></div>;
       }
       if (sub === 1) {
         return <PickMany key="bktypes" q={`What do you have at ${draft.name}?`} hint="Tap all that apply."
-          options={["Checking", "Savings", "Investment or retirement"]}
+          options={["Checking", "Savings", "Investment, retirement, or money market"]}
+          otherLabel="+ Other" otherQ="What kind of account is it?" otherPlaceholder="Certificate of deposit (CD)"
           onNext={(sel) => { setDraft({ ...draft, types: sel, last4ByType: {} }); setBillIdx(0); setSub(2); }} />;
       }
       if (sub === 2) {
@@ -1630,13 +1866,13 @@ export default function LifeMapBuilder() {
     // ---------- cards ----------
     if (phase === "cards") {
       if (sub === 0) {
-        return <TypeIn key={"cd" + cards.length}
+        return <div>{cards.length > 0 && <Notice>{cards[cards.length - 1].name} is saved.</Notice>}<TypeIn key={"cd" + cards.length}
           q={cards.length ? "Any other card you use?" : "What's a card you use — credit or debit?"}
           hint={cards.length ? null : "The bank and kind is plenty: 'Chase Visa'. Never the full number."}
           placeholder="Visa from my bank"
           skipLabel={cards.length ? "That's all my cards" : "No cards / skip"}
           initial={draft?.name || ""}
-          onSave={(v) => { if (v === null) { next("payments"); return; } setDraft({ name: v }); setSub(1); }} />;
+          onSave={(v) => { if (v === null) { next("payments"); return; } setDraft({ name: v }); setSub(1); }} /></div>;
       }
       if (sub === 1) {
         return <TypeIn key="cd4" q="Last 4 digits on the card?"
@@ -1795,7 +2031,7 @@ export default function LifeMapBuilder() {
     // ---------- photos ----------
     if (phase === "photos") {
       if (sub === 0) {
-        return <PickOne key={"ph" + photos.length}
+        return <div>{photos.length > 0 && <Notice>{photos[photos.length - 1].name} is saved.</Notice>}<PickOne key={"ph" + photos.length}
           q={photos.length ? "Anywhere else your photos or files live?" : "Where do your photos live?"}
           hint={photos.length ? null : "Phones quietly copy photos to the cloud. If nobody knows where, the pictures can vanish with the account."}
           options={[
@@ -1806,7 +2042,7 @@ export default function LifeMapBuilder() {
           ]}
           otherLabel="+ Somewhere else" otherQ="Where?" otherPlaceholder="Shutterfly"
           skip={photos.length ? "That's all of them" : "Just on my phone / not sure"}
-          onPick={(v) => { if (v === null) { next("purchases"); return; } setDraft({ name: v }); setSub(1); }} />;
+          onPick={(v) => { if (v === null) { next("purchases"); return; } setDraft({ name: v }); setSub(1); }} /></div>;
       }
       if (sub === 1) {
         return <PickOne key="phpaid" q={`Do you pay for extra storage on ${draft.name}?`}
@@ -1939,7 +2175,7 @@ export default function LifeMapBuilder() {
     // ---------- safes ----------
     if (phase === "safes") {
       if (sub === 0) {
-        return <PickOne key={"sf" + safes.length}
+        return <div>{safes.length > 0 && <Notice>{safes[safes.length - 1].name} is saved.</Notice>}<PickOne key={"sf" + safes.length}
           q={safes.length ? "Any other safe or lockbox?" : "Do you have a safe or lockbox?"}
           hint={safes.length ? null : "The physical places where important things are locked away — including where your Password List will live."}
           options={[
@@ -1948,7 +2184,7 @@ export default function LifeMapBuilder() {
           ]}
           otherLabel="+ Something else" otherQ="What is it?" otherPlaceholder="lockbox in the barn"
           skip={safes.length ? "That's all of them" : "No / skip"}
-          onPick={(v) => { if (v === null) { next("legacy"); return; } setDraft({ name: v }); setSub(1); }} />;
+          onPick={(v) => { if (v === null) { next("legacy"); return; } setDraft({ name: v }); setSub(1); }} /></div>;
       }
       if (sub === 1) {
         if (draft.name === "Safe deposit box at the bank") {
@@ -2021,13 +2257,7 @@ export default function LifeMapBuilder() {
     if (phase === "map") {
       return (
         <Ask q="Look at that — your digital life, on one map.">
-          <div className="mb-4 rounded-2xl p-3" style={{ background: "#fff", border: `3px solid ${GREEN}` }}>
-            <MapView />
-          </div>
-          <div className="mb-4 flex flex-wrap gap-4 text-lg font-bold" style={{ color: INK2 }}>
-            <span><span style={{ color: GREEN_DK }}>——</span> signs in with</span>
-            <span><span style={{ color: GOLD }}>- - -</span> pays for</span>
-          </div>
+          {mapBlock()}
           {hubEdges > 0 && (
             <div className="mb-5 rounded-2xl p-4 text-xl font-bold leading-snug" style={{ background: PANEL, color: NAVY, border: `2px solid ${GREEN}` }}>
               If {email1.name} were closed today, {hubEdges} thing{hubEdges > 1 ? "s" : ""} on this map would break. That's why email always closes <u>last</u>.
